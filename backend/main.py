@@ -167,7 +167,7 @@ async def get_ai_answer(question: str, max_retries: int = 2) -> str:
         "completionOptions": {
             "stream": False,
             "temperature": 0.6,
-            "maxTokens": 800
+            "maxTokens": 8000
         },
         "messages": [{"role": "user", "text": question}]
     }
