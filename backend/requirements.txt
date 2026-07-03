@@ -1,0 +1,16 @@
+# Web Framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
+# Environment & Config
+python-dotenv==1.0.1
+
+# HTTP Client (для Yandex API)
+httpx==0.28.1
+
+# Async File I/O
+aiofiles==24.1.0
+
+# File Uploads & WebSockets
+python-multipart==0.0.18
+python-socketio==5.16.0
