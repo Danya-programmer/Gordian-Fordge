@@ -26,8 +26,10 @@ export function FileUploader() {
   const uploadFile = async (file: File) => {
     // Проверяем расширение
     const ext = '.' + (file.name.split('.').pop()?.toLowerCase() || '')
-    if (!['.pdf', '.docx'].includes(ext)) {
-      showNotice('danger', 'Разрешены только PDF и DOCX файлы')
+    if (!['.pdf', '.docx',
+      // '.xlsx', '.xls', 'docm',
+       '.doc', '.pptx'].includes(ext)) {
+      showNotice('danger', 'Разрешены только .pdf/.docx/.doc/.pptx')
       return
     }
 
@@ -92,8 +94,12 @@ export function FileUploader() {
         <h4>📎 Перетащите файл сюда</h4>
         <p className="text-muted mb-3">или</p>
         <label className="btn btn-primary">
-          Выбрать файл (PDF/DOCX)
-          <input type="file" accept=".pdf,.docx" onChange={handleFileInput} hidden />
+          Выбрать файл (.pdf/.docx/.doc/
+          {/*.docm/.xlsx,/.xls/ */}
+          .pptx)
+          <input type="file" 
+          // accept=".pdf,.docx,.pptx" 
+          onChange={handleFileInput} hidden />
         </label>
         {uploading && (
           <div className="mt-3">

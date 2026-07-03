@@ -4,7 +4,7 @@ export function Header() {
   return (
     <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
       <div className="container">
-        <span className="navbar-brand mb-0 h1">Chat & Upload App</span>
+        <span className="navbar-brand mb-0 h1">Gordian Forge - AI-разведка знаний для Норникеля</span>
         <div className="navbar-nav flex-row gap-2">
           <NavLink
             to="/"
