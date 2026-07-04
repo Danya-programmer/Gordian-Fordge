@@ -229,21 +229,18 @@ class GraphDB:
     # ------------------------------------------------------------------ #
     #  Публичные обёртки                                                  #
     # ------------------------------------------------------------------ #
-    def add(self, data: Union[str, dict]) -> dict:
+    def add(self, data: Union[str, dict], doc_id: str = "temp_doc") -> dict:
         """
         Публичная обёртка над _add.
         Принимает JSON-строку или dict, нормализует и добавляет в БД.
         """
+        return self.add_with_publication(self._normalize_graph(data), doc_id=doc_id)
+
         graph = self._normalize_graph(data)
         return self._add(graph)
 
-    def remove(self, data: Union[str, dict]) -> dict:
-        """
-        Публичная обёртка над _remove.
-        Принимает JSON-строку или dict-селектор.
-        """
-        selector = self._normalize_selector(data)
-        return self._remove(selector)
+    def remove(self, doc_id) -> dict:
+        return self.remove_by_doc_id(doc_id)
 
     def find(self, data: Union[str, dict], max_path_length: int = 3) -> list[dict]:
         """
@@ -264,6 +261,121 @@ class GraphDB:
     # ------------------------------------------------------------------ #
     #  1) isCorrect — проверка и лёгкое исправление графа                #
     # ------------------------------------------------------------------ #
+  
+    def add_with_publication(self, graph: dict, doc_id: str = None) -> dict:
+        """
+        Добавляет корректный граф в Neo4j.
+        Если указан doc_id:
+          - создаёт/находит publication с name=doc_id
+          - находит все корни подграфа (узлы без входящих рёбер)
+          - соединяет publication с каждым корнем через DESCRIBES
+        
+        Дедупликация:
+          - Material/Equipment/Facility/Expert/Publication/Process/Experiment — по (type, name)
+          - Parameter — всегда создаётся новый (по ТЗ)
+        """
+        # Сначала проверяем/чиним
+        is_ok, fixed, fixes = self.isCorrect(graph)
+        fixed = self._normalize_graph(fixed)
+
+        stats = {"nodes_created": 0, "nodes_matched": 0, "edges_created": 0, "roots_connected": 0}
+        id_map: dict[int, int] = {}
+
+        with self.driver.session() as session:
+            # --- 1. Если есть doc_id — создаём/находим publication-обёртку ---
+            pub_id = None
+            if doc_id:
+                result = session.run(
+                    """
+                    MERGE (p:Publication {name: $doc_id})
+                    ON CREATE SET p.doc_id = $doc_id, p.created_at = timestamp()
+                    ON MATCH  SET p.updated_at = timestamp()
+                    RETURN elementId(p) AS pid
+                    """,
+                    doc_id=doc_id,
+                )
+                pub_id = result.single()["pid"]
+
+            # --- 2. Узлы (как было) ---
+            for n in fixed["nodes"]:
+                ntype = n["type"]
+                name = n.get("name", "")
+                props = n.get("props", {}) or {}
+                props["name"] = name
+
+                if ntype == "parameter":
+                    result = session.run(
+                        f"CREATE (n:{ntype.capitalize()} $props) RETURN elementId(n) AS nid",
+                        props=props,
+                    )
+                    new_id = result.single()["nid"]
+                    id_map[n["id"]] = new_id
+                    stats["nodes_created"] += 1
+                else:
+                    result = session.run(
+                        f"""
+                        MERGE (n:{ntype.capitalize()} {{name: $name}})
+                        ON CREATE SET n += $props, n.created_at = timestamp()
+                        ON MATCH  SET n.updated_at = timestamp()
+                        RETURN elementId(n) AS nid,
+                               CASE WHEN n.created_at = timestamp()
+                                    THEN 'created' ELSE 'matched' END AS status
+                        """,
+                        props=props, name=name,
+                    )
+                    rec = result.single()
+                    id_map[n["id"]] = rec["nid"]
+                    if rec["status"] == "created":
+                        stats["nodes_created"] += 1
+                    else:
+                        stats["nodes_matched"] += 1
+
+            # --- 3. Рёбра (как было) ---
+            nodes_with_incoming = set()  # для поиска корней
+            for e in fixed["edges"]:
+                src = id_map.get(e["from"])
+                dst = id_map.get(e["to"])
+                if src is None or dst is None:
+                    continue
+                etype = e["type"].upper()
+
+                import json
+                props = {
+                    "pages": e.get("pages", []),
+                    "params_json": json.dumps(e.get("params", {}), ensure_ascii=False),
+                }
+
+                session.run(
+                    f"""
+                    MATCH (a), (b)
+                    WHERE elementId(a) = $src AND elementId(b) = $dst
+                    MERGE (a)-[r:{etype}]->(b)
+                    SET r += $props
+                    """,
+                    src=src, dst=dst, props=props,
+                )
+                stats["edges_created"] += 1
+                nodes_with_incoming.add(dst)
+
+            # --- 4. Если есть doc_id — соединяем publication с корнями ---
+            if pub_id:
+                # Корень = узел подграфа, у которого нет входящих рёбер
+                for n in fixed["nodes"]:
+                    if id_map.get(n["id"]) not in nodes_with_incoming:
+                        root_id = id_map.get(n["id"])
+                        if root_id is None or root_id == pub_id:
+                            continue
+                        session.run(
+                            """
+                            MATCH (pub), (root)
+                            WHERE elementId(pub) = $pub_id AND elementId(root) = $root_id
+                            MERGE (pub)-[:DESCRIBES]->(root)
+                            """,
+                            pub_id=pub_id, root_id=root_id,
+                        )
+                        stats["roots_connected"] += 1
+
+        return stats
     def _isCorrect(self, graph: dict) -> tuple[bool, dict, list[str]]:
         """
         Проверяет граф на соответствие инвариантам.
@@ -476,6 +588,145 @@ class GraphDB:
     # ------------------------------------------------------------------ #
     #  3) remove — удаление сущностей                                    #
     # ------------------------------------------------------------------ #
+    def remove_by_doc_id(self, doc_id: str, max_depth: int = 10, cascade: bool = False) -> dict:
+        """
+        Удаляет документ по doc_id: publication и все узлы, которые принадлежат
+        ТОЛЬКО этому документу (не описываются другими publication'ами).
+
+        Логика:
+        1. Находит publication по name=doc_id.
+        2. Находит все узлы, достижимые из этой publication (через DESCRIBES и далее).
+        3. Находит все узлы, достижимые из ДРУГИХ publication'ов.
+        4. Удаляет только те узлы, которые есть в п.2, но НЕТ в п.3.
+        5. Если cascade=False — защищает Material/Equipment/Facility.
+
+        Args:
+            doc_id: идентификатор документа (совпадает с name publication)
+            max_depth: максимальная глубина обхода графа (по умолчанию 10)
+            cascade: если True — удаляет даже разделяемые сущности
+
+        Returns:
+            dict со статистикой:
+            {
+                "publication_found": bool,
+                "nodes_deleted": N,
+                "edges_deleted": N,
+                "protected_nodes": N,  # узлы, которые не были удалены
+            }
+        """
+        doc_id = str(doc_id)  # на всякий случай приводим к строке
+        stats = {
+            "publication_found": False,
+            "nodes_deleted": 0,
+            "edges_deleted": 0,
+            "protected_nodes": 0,
+        }
+
+        with self.driver.session() as session:
+            # 1. Находим publication
+            pub_result = session.run(
+                "MATCH (pub:Publication {name: $doc_id}) RETURN elementId(pub) AS pid",
+                doc_id=doc_id,
+            ).single()
+
+            if not pub_result:
+                return stats
+
+            stats["publication_found"] = True
+            pub_id = pub_result["pid"]
+
+            # 2-3. Одним запросом находим:
+            #    - все узлы, достижимые из нашей publication
+            #    - все узлы, достижимые из ДРУГИХ publication'ов
+            result = session.run(
+                f"""
+                // Узлы, достижимые из нашей publication
+                MATCH (pub:Publication)-[:DESCRIBES*0..1]->(root)
+                WHERE elementId(pub) = $pub_id
+                MATCH (root)-[*0..{max_depth}]->(node)
+                WITH collect(DISTINCT elementId(node)) AS our_nodes
+
+                // Узлы, достижимые из ДРУГИХ publication'ов
+                OPTIONAL MATCH (other_pub:Publication)-[:DESCRIBES*0..1]->(other_root)
+                WHERE elementId(other_pub) <> $pub_id
+                OPTIONAL MATCH (other_root)-[*0..{max_depth}]->(other_node)
+                WITH our_nodes, collect(DISTINCT elementId(other_node)) AS other_nodes
+
+                RETURN our_nodes, other_nodes
+                """,
+                pub_id=pub_id,
+            ).single()
+
+            our_nodes = set(result["our_nodes"] or [])
+            other_nodes = set(result["other_nodes"] or [])
+
+            # Уникальные узлы — те, что есть у нас, но нет у других
+            unique_nodes = our_nodes - other_nodes - {pub_id}
+
+            if not unique_nodes:
+                # Нет уникальных узлов — удаляем только publication
+                session.run(
+                    "MATCH (pub:Publication) WHERE elementId(pub) = $pub_id DETACH DELETE pub",
+                    pub_id=pub_id,
+                )
+                stats["nodes_deleted"] = 1
+                return stats
+
+            # 4. Защита разделяемых сущностей (если не cascade)
+            if not cascade:
+                nodes_with_types = session.run(
+                    """
+                    MATCH (n) WHERE elementId(n) IN $nids
+                    RETURN elementId(n) AS nid, labels(n) AS lbls
+                    """,
+                    nids=list(unique_nodes),
+                )
+
+                protected = set()
+                for rec in nodes_with_types:
+                    label = list(rec["lbls"])[0].lower() if rec["lbls"] else ""
+                    if label in ["material", "equipment", "facility"]:
+                        protected.add(rec["nid"])
+
+                unique_nodes -= protected
+                stats["protected_nodes"] = len(protected)
+
+            if not unique_nodes:
+                # Все узлы защищены — удаляем только publication
+                session.run(
+                    "MATCH (pub:Publication) WHERE elementId(pub) = $pub_id DETACH DELETE pub",
+                    pub_id=pub_id,
+                )
+                stats["nodes_deleted"] = 1
+                return stats
+
+            # 5. Считаем рёбра перед удалением
+            edges_res = session.run(
+                """
+                MATCH (n) WHERE elementId(n) IN $nids
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS deg
+                RETURN sum(deg) AS edges
+                """,
+                nids=list(unique_nodes),
+            ).single()
+            stats["edges_deleted"] = (edges_res["edges"] or 0) // 2
+
+            # 6. Удаляем уникальные узлы
+            session.run(
+                "MATCH (n) WHERE elementId(n) IN $nids DETACH DELETE n",
+                nids=list(unique_nodes),
+            )
+            stats["nodes_deleted"] = len(unique_nodes)
+
+            # 7. Удаляем саму publication
+            session.run(
+                "MATCH (pub:Publication) WHERE elementId(pub) = $pub_id DETACH DELETE pub",
+                pub_id=pub_id,
+            )
+            stats["nodes_deleted"] += 1
+
+        return stats
     def _remove(self, selector: dict) -> dict:
         """
         Удаляет сущности по селектору.
