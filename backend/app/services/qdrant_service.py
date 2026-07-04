@@ -1,8 +1,6 @@
 """
 QdrantService — фабрика для работы с Qdrant.
-- Создание коллекции
-- Загрузка чанков
-- Гибридный поиск (dense + sparse + RRF)
+Совместимо с qdrant-client 1.12+ (новый API через query_points).
 """
 import logging
 from typing import List, Dict, Any, Optional
@@ -17,8 +15,6 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
     MatchAny,
-    Range,
-    SearchRequest,
     SparseVector,
 )
 
@@ -32,7 +28,7 @@ class QdrantService:
     """Фабрика для работы с Qdrant."""
 
     def __init__(self, url: str = None, collection_name: str = None):
-        self.url = url or QDRANT_URL or "http://localhost:6333"
+        self.url = url or QDRANT_URL or "http://qdrant:6333"
         self.collection_name = collection_name or QDRANT_COLLECTION_NAME or "scientific_chunks"
         self.client = QdrantClient(url=self.url)
         self._ensure_collection()
@@ -48,7 +44,7 @@ class QdrantService:
                 collection_name=self.collection_name,
                 vectors_config={
                     "dense": VectorParams(
-                        size=1024,  # ✅ multilingual-e5-large = 1024
+                        size=1024,
                         distance=Distance.COSINE,
                     ),
                 },
@@ -63,23 +59,14 @@ class QdrantService:
             logger.info(f"✅ Коллекция {self.collection_name} уже существует")
 
     def upsert_chunk(self, chunk_data: Dict[str, Any]) -> str:
-        """
-        Загружает один чанк в Qdrant.
-        
-        Args:
-            chunk_data: результат _build_qdrant_payload из парсера
-            
-        Returns:
-            point_id (UUID)
-        """
+        """Загружает один чанк в Qdrant."""
         point_id = chunk_data["id"]
         text = chunk_data["payload"]["text"]
         
-        # Генерация эмбеддингов
+        logger.info(f"🔧 Генерация эмбеддингов для точки {point_id[:8]}...")
         dense = get_dense_embedding(text, is_query=False)
         sparse = get_sparse_embedding(text)
         
-        # Формирование точки
         point = PointStruct(
             id=point_id,
             vector={
@@ -92,56 +79,13 @@ class QdrantService:
             payload=chunk_data["payload"],
         )
         
-        # Загрузка в Qdrant
         self.client.upsert(
             collection_name=self.collection_name,
             points=[point],
         )
         
+        logger.info(f"✅ Точка {point_id[:8]} загружена в Qdrant")
         return point_id
-
-    def upsert_chunks_batch(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
-        """
-        Batch-загрузка чанков (быстрее для больших объёмов).
-        """
-        if not chunks_data:
-            return []
-        
-        # Генерация эмбеддингов батчем
-        texts = [c["payload"]["text"] for c in chunks_data]
-        
-        from app.services.embeddings import get_dense_embeddings_batch, get_sparse_embeddings_batch
-        dense_batch = get_dense_embeddings_batch(texts, is_query=False)
-        sparse_batch = get_sparse_embeddings_batch(texts)
-        
-        # Формирование точек
-        points = []
-        point_ids = []
-        for i, chunk_data in enumerate(chunks_data):
-            point_id = chunk_data["id"]
-            point_ids.append(point_id)
-            
-            point = PointStruct(
-                id=point_id,
-                vector={
-                    "dense": dense_batch[i],
-                    "sparse": SparseVector(
-                        indices=sparse_batch[i]["indices"],
-                        values=sparse_batch[i]["values"],
-                    ),
-                },
-                payload=chunk_data["payload"],
-            )
-            points.append(point)
-        
-        # Batch upsert
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points,
-        )
-        
-        logger.info(f"✅ Загружено {len(points)} чанков в Qdrant")
-        return point_ids
 
     def hybrid_search(
         self,
@@ -153,16 +97,7 @@ class QdrantService:
     ) -> List[Dict[str, Any]]:
         """
         Гибридный поиск: dense + sparse + RRF.
-        
-        Args:
-            query: текст запроса
-            limit: количество результатов
-            doc_id_filter: фильтр по doc_id (если есть точные сущности из Neo4j)
-            materials_filter: фильтр по материалам
-            processes_filter: фильтр по процессам
-            
-        Returns:
-            список результатов с payload и score
+        Использует новый API query_points (qdrant-client 1.12+).
         """
         # Генерация эмбеддингов запроса
         dense_query = get_dense_embedding(query, is_query=True)
@@ -185,39 +120,39 @@ class QdrantService:
         
         search_filter = Filter(must=filter_conditions) if filter_conditions else None
         
+        # ✅ НОВЫЙ API: query_points вместо search
         # Поиск по dense
-        dense_results = self.client.search(
+        dense_response = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=("dense", dense_query),
-            limit=limit * 2,  # Берём с запасом для RRF
-            query_filter=search_filter,
-        )
-        
-        # Поиск по sparse
-        sparse_results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=("sparse", SparseVector(
-                indices=sparse_query["indices"],
-                values=sparse_query["values"],
-            )),
+            query=dense_query,
+            using="dense",
             limit=limit * 2,
             query_filter=search_filter,
         )
+        dense_results = dense_response.points
+        
+        # Поиск по sparse
+        sparse_response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=SparseVector(
+                indices=sparse_query["indices"],
+                values=sparse_query["values"],
+            ),
+            using="sparse",
+            limit=limit * 2,
+            query_filter=search_filter,
+        )
+        sparse_results = sparse_response.points
         
         # RRF (Reciprocal Rank Fusion)
         return self._rrf_fusion(dense_results, sparse_results, limit)
 
     def _rrf_fusion(self, dense_results, sparse_results, limit: int) -> List[Dict[str, Any]]:
-        """
-        Reciprocal Rank Fusion — объединение результатов dense и sparse поиска.
-        """
+        """Reciprocal Rank Fusion."""
         from collections import defaultdict
         
         scores = defaultdict(float)
         results_map = {}
-        
-        # RRF формула: score = sum(1 / (k + rank))
-        # k обычно = 60
         k = 60
         
         for rank, result in enumerate(dense_results, start=1):
@@ -230,10 +165,8 @@ class QdrantService:
             scores[point_id] += 1.0 / (k + rank)
             results_map[point_id] = result
         
-        # Сортировка по итоговому score
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
         
-        # Формирование результатов
         final_results = []
         for point_id in sorted_ids[:limit]:
             result = results_map[point_id]
