@@ -3,7 +3,7 @@ services:
   nginx:
     build:
       context: ./nginx
-      dockerfile: Dockerfile.prod
+      dockerfile: Dockerfile
     container_name: gordian-nginx
     ports:
       - "80:80"    # HTTP (для Let's Encrypt challenge + редирект)
@@ -24,7 +24,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.prod
     container_name: gordian-frontend
     expose:
       - "80"   # только внутри сети
