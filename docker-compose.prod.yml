@@ -1,0 +1,134 @@
+services:
+  # ==================== NGINX (Reverse Proxy + SSL) ====================
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: gordian-nginx
+    ports:
+      - "80:80"    # HTTP (для Let's Encrypt challenge + редирект)
+      - "443:443"  # HTTPS
+    volumes:
+      # SSL сертификаты
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+      # Собранный фронтенд (если не используется multi-stage)
+      - frontend_dist:/usr/share/nginx/html
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - gordian-network
+
+  # ==================== FRONTEND (только для сборки) ====================
+  # В проде фронтенд собирается один раз и раздаётся через Nginx
+  # Этот сервис НЕ запускается в проде, используется только для build
+  frontend-build:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: gordian-frontend-build
+    # Не запускаем, только для сборки
+    profiles:
+      - build
+    volumes:
+      - frontend_dist:/app/dist-output
+
+  # ==================== BACKEND ====================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gordian-backend
+    # ❌ НЕ пробрасываем порт 8000 наружу — только через Nginx
+    # ports:
+    #   - "8000:8000"
+    expose:
+      - "8000"  # Доступен только внутри Docker-сети
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+      - hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+      - neo4j
+      - postgres
+    networks:
+      - gordian-network
+
+  # ==================== POSTGRESQL ====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: gordian-postgres
+    environment:
+      - POSTGRES_DB=gordian
+      - POSTGRES_USER=gordian
+      - POSTGRES_PASSWORD=gordian_password_2025
+    # ❌ Не пробрасываем 5432 наружу в проде
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
+  # ==================== QDRANT ====================
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: gordian-qdrant
+    expose:
+      - "6333"
+      - "6334"
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
+  # ==================== NEO4J ====================
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: gordian-neo4j
+    expose:
+      - "7474"
+      - "7687"
+    environment:
+      - NEO4J_AUTH=neo4j/gordian_hackathon_2025
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_heap_max__size=512M
+      - NEO4J_dbms_memory_pagecache_size=256M
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
+# ==================== VOLUMES ====================
+volumes:
+  qdrant_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+  hf_cache:
+  postgres_data:
+  certbot_conf:        # SSL сертификаты
+  certbot_www:         # Для Let's Encrypt challenge
+  frontend_dist:       # Собранный фронтенд
+
+# ==================== NETWORKS ====================
+networks:
+  gordian-network:
+    driver: bridge

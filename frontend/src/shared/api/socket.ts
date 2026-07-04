@@ -4,12 +4,13 @@ let socket: Socket | null = null
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io('http://localhost:8000', {
+    // ✅ Автоматически определяет ws:// или wss://
+    socket = io({
       transports: ['websocket', 'polling'],
       autoConnect: true,
-      timeout: 60000, // ✅ Увеличили таймаут подключения (было по умолчанию 20000)
-      reconnection: true, // ✅ Автопереподключение при обрыве
-      reconnectionAttempts: 5,
+      timeout: 60000,
+      reconnection: true,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
     })
   }
