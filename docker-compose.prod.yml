@@ -3,7 +3,7 @@ services:
   nginx:
     build:
       context: ./nginx
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.prod
     container_name: gordian-nginx
     ports:
       - "80:80"    # HTTP (для Let's Encrypt challenge + редирект)
