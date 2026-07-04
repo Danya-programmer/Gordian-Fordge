@@ -12,27 +12,28 @@ services:
       # SSL сертификаты
       - /etc/letsencrypt:/etc/letsencrypt:ro   # только чтение
       - /var/www/certbot:/var/www/certbot:ro   # если каталог существу
-      # Собранный фронтенд (если не используется multi-stage)
-      - frontend_dist:/usr/share/nginx/html
+
     restart: unless-stopped
     depends_on:
       - backend
     networks:
       - gordian-network
 
-  # ==================== FRONTEND (только для сборки) ====================
-  # В проде фронтенд собирается один раз и раздаётся через Nginx
-  # Этот сервис НЕ запускается в проде, используется только для build
-  frontend-build:
+  # ==================== FRONTEND ====================
+
+  frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.prod
-    container_name: gordian-frontend-build
-    # Не запускаем, только для сборки
-    profiles:
-      - build
-    volumes:
-      - frontend_dist:/app/dist-output
+      dockerfile: Dockerfile
+    container_name: gordian-frontend
+    expose:
+      - "80"   # только внутри сети
+    restart: unless-stopped
+    networks:
+      - gordian-network
+    # Если нужно передать переменные окружения для сборки (например, VITE_API_URL)
+    environment:
+      - VITE_API_URL=/api   # или оставить пустым, если бекенд проксируется
 
   # ==================== BACKEND ====================
   backend:
@@ -124,9 +125,7 @@ volumes:
     driver: local
   hf_cache:
   postgres_data:
-  certbot_conf:        # SSL сертификаты
-  certbot_www:         # Для Let's Encrypt challenge
-  frontend_dist:       # Собранный фронтенд
+
 
 # ==================== NETWORKS ====================
 networks:
