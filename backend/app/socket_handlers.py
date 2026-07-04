@@ -1,6 +1,6 @@
 import logging
 
-from app.services.yandex_ai import get_ai_answer
+from app.services.timeweb_ai import get_ai_answer
 from app.socketio_app import chat_rooms, sio
 
 logger = logging.getLogger(__name__)

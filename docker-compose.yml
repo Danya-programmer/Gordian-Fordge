@@ -1,4 +1,5 @@
 services:
+  # ==================== BACKEND ====================
   backend:
     build:
       context: ./backend
@@ -11,3 +12,60 @@ services:
     volumes:
       - ./uploads:/app/uploads
     restart: unless-stopped
+    depends_on:
+      - qdrant
+      - neo4j
+    networks:
+      - gordian-network
+
+  # ==================== QDRANT v1.18.2 ====================
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: gordian-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
+  # ==================== NEO4J 5.26 ====================
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: gordian-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/gordian_hackathon_2025
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_heap_max__size=512M
+      - NEO4J_dbms_memory_pagecache_size=256M
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
+# ==================== VOLUMES ====================
+volumes:
+  qdrant_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+
+# ==================== NETWORKS ====================
+networks:
+  gordian-network:
+    driver: bridge
