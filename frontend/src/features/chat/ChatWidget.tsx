@@ -11,48 +11,34 @@ export function ChatWidget() {
   const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const pendingMessageRef = useRef<string | null>(null) // ✅ Храним ожидающее сообщение
 
-  // Авто-скролл
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // ОДИН useEffect для всех обработчиков сокета
   useEffect(() => {
     const socket = getSocket()
 
-    if (!socket.connected) {
-      socket.connect()
-    }
+    // ✅ Сокет уже подключен автоматически (autoConnect: true)
+    setIsConnected(socket.connected)
 
-    // Обработчики соединения
     const onConnect = () => {
-      console.log('✅ Socket подключен')
+      console.log('✅ ChatWidget: Socket подключен')
       setIsConnected(true)
-      
-      // ✅ Если есть ожидающее сообщение - отправляем его
-      if (pendingMessageRef.current) {
-        console.log('📤 Отправляем ожидающее сообщение:', pendingMessageRef.current)
-        socket.emit('user_message', { text: pendingMessageRef.current })
-        pendingMessageRef.current = null
-      }
     }
 
     const onDisconnect = () => {
-      console.log('🔌 Socket отключен')
+      console.log('🔌 ChatWidget: Socket отключен')
       setIsConnected(false)
       setIsWaiting(false)
     }
 
     const onConnectError = () => {
-      console.error('❌ Ошибка подключения')
+      console.error('❌ ChatWidget: Ошибка подключения')
       setIsConnected(false)
       setIsWaiting(false)
-      pendingMessageRef.current = null // ✅ Очищаем ожидающее сообщение
     }
 
-    // Обработчики AI
     const onAiThinking = () => {
       console.log('🤖 AI думает...')
       setIsWaiting(true)
@@ -69,7 +55,7 @@ export function ChatWidget() {
       setIsWaiting(false)
       const botMsg: Message = {
         id: Date.now().toString() + '-bot',
-        text: data.answer,
+        text: data.answer || data.text || 'Ответ пустой',
         sender: 'bot',
         timestamp: new Date().toISOString(),
       }
@@ -94,7 +80,6 @@ export function ChatWidget() {
       setMessages((prev) => [...prev, errorMsg])
     }
 
-    // Регистрируем ВСЕ обработчики
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
     socket.on('connect_error', onConnectError)
@@ -102,7 +87,6 @@ export function ChatWidget() {
     socket.on('ai_answer', onAiAnswer)
     socket.on('error', onError)
 
-    // Cleanup
     return () => {
       socket.off('connect', onConnect)
       socket.off('disconnect', onDisconnect)
@@ -119,7 +103,6 @@ export function ChatWidget() {
 
     const socket = getSocket()
 
-    // Добавляем сообщение пользователя сразу
     const userMsg: Message = {
       id: Date.now().toString(),
       text,
@@ -130,21 +113,12 @@ export function ChatWidget() {
     setInput('')
     setIsWaiting(true)
 
-    // ✅ Если уже подключены - отправляем сразу
-    if (socket.connected) {
-      console.log('📤 Отправляем сообщение сразу')
-      socket.emit('user_message', { text })
-    } else {
-      // ✅ Если не подключены - сохраняем в очередь
-      console.log('⏳ Socket не подключен, ждём подключения...')
-      pendingMessageRef.current = text
-      socket.connect()
-    }
+    // ✅ Просто отправляем — сокет уже подключен
+    console.log('📤 Отправляем сообщение')
+    socket.emit('user_message', { text })
 
-    // Таймаут 60 секунд
     timeoutRef.current = setTimeout(() => {
       setIsWaiting(false)
-      pendingMessageRef.current = null // ✅ Очищаем ожидающее сообщение
       const timeoutMsg: Message = {
         id: Date.now().toString() + '-timeout',
         text: '⚠️ Превышено время ожидания (60с).',

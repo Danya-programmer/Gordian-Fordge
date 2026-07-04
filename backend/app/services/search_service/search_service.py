@@ -237,7 +237,9 @@ class SearchService:
             payload = result["payload"]
             sources.append({
                 "doc_id": payload.get("doc_id"),
-                "title": payload.get("title", "Unknown"),
+                "title": payload.get("title", payload.get("file_name", "Unknown")),
+                "file_name": payload.get("file_name", "Unknown"),
+                "file_url": payload.get("file_url"),  # ← берём из payload Qdrant
                 "chunk_index": payload.get("chunk_index"),
                 "score": result.get("score", 0),
             })

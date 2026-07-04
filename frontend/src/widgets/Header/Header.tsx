@@ -13,7 +13,7 @@ export function Header() {
             }
             end
           >
-            💬 Чат
+            💬 Чат 
           </NavLink>
           <NavLink
             to="/upload"
@@ -21,7 +21,7 @@ export function Header() {
               `btn btn-sm ${isActive ? 'btn-primary' : 'btn-outline-light'}`
             }
           >
-            📁 Загрузка файлов
+            📁 Загрузка и список источников
           </NavLink>
         </div>
       </div>

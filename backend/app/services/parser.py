@@ -140,12 +140,17 @@ class DocumentParser:
         return {
             "id": str(uuid.uuid4()),
             "vector": {
-                "dense": [],  # заполнится в QdrantService
+                "dense": [],
                 "sparse": {"indices": [], "values": []},
             },
             "payload": {
                 "text": chunk_text,
                 "doc_id": doc_metadata["doc_id"],
+                
+                # 🆕 Эти два поля нужны для отображения источников
+                "file_name": doc_metadata.get("title", doc_metadata.get("original_name", "Unknown")),
+                "file_url": doc_metadata.get("file_url", ""),
+                
                 "title": doc_metadata.get("title", ""),
                 "year": doc_metadata.get("year"),
                 "authors": doc_metadata.get("authors", []),

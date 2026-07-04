@@ -35,6 +35,23 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")  # для Docker
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "scientific_chunks")
 
 
+# PostgreSQL
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "gordian")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "gordian")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "gordian_password_2026")
+
+DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+# S3 (TimeWeb Object Storage)
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "https://s3.timeweb.cloud")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "gordian-documents")
+S3_REGION = os.getenv("S3_REGION", "ru-1")
+
+
 if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
     logger.warning("YANDEX_API_KEY или YANDEX_FOLDER_ID не найдены в .env файле!")
 

@@ -1,10 +1,16 @@
 import { useState, type DragEvent, type ChangeEvent } from 'react'
 import { api } from '@shared/api/http'
-import type { UploadedFile } from '@entities/file/types'
 
-export function FileUploader() {
-  // Локальное хранилище — работает всегда, даже без бэкенда
-  const [files, setFiles] = useState<UploadedFile[]>([])
+interface FileUploaderProps {
+  // Вызывается сразу при начале загрузки (для оптимистичного UI)
+  onUploadStart?: (filename: string, fileSize: number) => void
+  // Вызывается при успехе
+  onUploadSuccess?: () => void
+  // Вызывается при ошибке
+  onUploadError?: (error: string) => void
+}
+
+export function FileUploader({ onUploadStart, onUploadSuccess, onUploadError }: FileUploaderProps) {
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [notice, setNotice] = useState<{ type: 'success' | 'warning' | 'danger'; text: string } | null>(null)
@@ -14,27 +20,18 @@ export function FileUploader() {
     setTimeout(() => setNotice(null), 4000)
   }
 
-  const addFileLocally = (file: File) => {
-    const localFile: UploadedFile = {
-      filename: file.name,
-      size: file.size,
-      extension: '.' + file.name.split('.').pop()?.toLowerCase(),
-    }
-    setFiles((prev) => [...prev, localFile])
-  }
-
   const uploadFile = async (file: File) => {
-    // Проверяем расширение
     const ext = '.' + (file.name.split('.').pop()?.toLowerCase() || '')
-    if (!['.pdf', '.docx',
-      // '.xlsx', '.xls', 'docm',
-       '.doc', '.pptx'].includes(ext)) {
+    if (!['.pdf', '.docx', '.doc', '.pptx'].includes(ext)) {
       showNotice('danger', 'Разрешены только .pdf/.docx/.doc/.pptx')
       return
     }
 
     setUploading(true)
     setNotice(null)
+
+    // 🆕 Сразу уведомляем родителя — файл "появился" в списке
+    onUploadStart?.(file.name, file.size)
 
     const formData = new FormData()
     formData.append('file', file)
@@ -43,13 +40,12 @@ export function FileUploader() {
       await api.post('/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      // Успех на сервере — добавляем локально (чтобы не дублировать)
-      addFileLocally(file)
-      showNotice('success', `Файл "${file.name}" загружен на сервер`)
+      showNotice('success', `Файл "${file.name}" отправлен на сервер`)
+      onUploadSuccess?.()
     } catch (err: any) {
-      // Сервер недоступен — сохраняем локально и предупреждаем
-      addFileLocally(file)
-      showNotice('warning', 'Сервер недоступен. Файл сохранён только локально в браузере.')
+      const errorMsg = err?.response?.data?.detail || err?.message || 'Неизвестная ошибка'
+      showNotice('danger', `Ошибка загрузки: ${errorMsg}`)
+      onUploadError?.(errorMsg)
     } finally {
       setUploading(false)
     }
@@ -68,22 +64,12 @@ export function FileUploader() {
     e.target.value = ''
   }
 
-  const removeFile = (idx: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== idx))
-  }
-
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  }
-
   return (
     <div>
       <div
-        className={`border border-2 rounded-3 p-5 text-center mb-4 ${
+        className={`border border-2 rounded-3 p-5 text-center ${
           dragOver ? 'border-primary bg-light' : 'border-secondary'
-        }`}
+        } ${uploading ? 'opacity-50' : ''}`}
         onDragOver={(e) => {
           e.preventDefault()
           setDragOver(true)
@@ -93,56 +79,23 @@ export function FileUploader() {
       >
         <h4>📎 Перетащите файл сюда</h4>
         <p className="text-muted mb-3">или</p>
-        <label className="btn btn-primary">
-          Выбрать файл (.pdf/.docx/.doc/
-          {/*.docm/.xlsx,/.xls/ */}
-          .pptx)
-          <input type="file" 
-          // accept=".pdf,.docx,.pptx" 
-          onChange={handleFileInput} hidden />
+        <label className={`btn btn-primary ${uploading ? 'disabled' : ''}`}>
+          {uploading ? 'Загрузка...' : 'Выбрать файл'}
+          <input
+            type="file"
+            onChange={handleFileInput}
+            hidden
+            disabled={uploading}
+          />
         </label>
-        {uploading && (
-          <div className="mt-3">
-            <div className="spinner-border spinner-border-sm" role="status" />
-            <span className="ms-2">Загрузка...</span>
-          </div>
-        )}
+        <div className="mt-2 small text-muted">
+          .pdf, .docx, .doc, .pptx
+        </div>
       </div>
 
       {notice && (
-        <div className={`alert alert-${notice.type} py-2`}>{notice.text}</div>
+        <div className={`alert alert-${notice.type} py-2 mt-3`}>{notice.text}</div>
       )}
-
-      <div className="card">
-        <div className="card-header">
-          <strong>Загруженные файлы ({files.length})</strong>
-        </div>
-        <ul className="list-group list-group-flush">
-          {files.length === 0 && (
-            <li className="list-group-item text-muted text-center">Файлов пока нет</li>
-          )}
-          {files.map((file, idx) => (
-            <li
-              key={idx}
-              className="list-group-item d-flex justify-content-between align-items-center"
-            >
-              <div>
-                <span className="me-2">{file.extension === '.pdf' ? '📄' : '📝'}</span>
-                <strong>{file.filename}</strong>
-              </div>
-              <div>
-                <span className="badge bg-secondary me-2">{formatSize(file.size)}</span>
-                <button
-                  className="btn btn-sm btn-outline-danger"
-                  onClick={() => removeFile(idx)}
-                >
-                  ✕
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
     </div>
   )
 }

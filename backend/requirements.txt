@@ -34,3 +34,11 @@ langchain-text-splitters==1.1.2
 qdrant-client==1.18.0
 sentence-transformers==5.5.0
 fastembed==0.8.0
+
+# PostgreSQL
+asyncpg==0.31.0
+sqlalchemy[asyncio]==2.0.51
+
+# S3
+boto3==1.43.40
+alembic==1.18.4

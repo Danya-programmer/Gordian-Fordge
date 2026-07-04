@@ -20,8 +20,8 @@ services:
       - WATCHPACK_POLLING=true
       - VITE_API_URL=http://localhost:8000
     restart: unless-stopped
-    depends_on:
-      - backend
+    # depends_on:
+    #   - backend
     networks:
       - gordian-network
   # ==================== BACKEND ====================
@@ -43,6 +43,23 @@ services:
       - neo4j
     networks:
       - gordian-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: gordian-postgres
+    environment:
+      - POSTGRES_DB=gordian
+      - POSTGRES_USER=gordian
+      - POSTGRES_PASSWORD=gordian_password_2025
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - gordian-network
+
 
   # ==================== QDRANT v1.18.2 ====================
   qdrant:
@@ -91,6 +108,7 @@ volumes:
   neo4j_plugins:
     driver: local
   hf_cache:
+  postgres_data:
 
 # ==================== NETWORKS ====================
 networks:

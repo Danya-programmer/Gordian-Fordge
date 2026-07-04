@@ -6,7 +6,7 @@ export function getSocket(): Socket {
   if (!socket) {
     socket = io('http://localhost:8000', {
       transports: ['websocket', 'polling'],
-      autoConnect: false, // Подключаемся вручную в ChatWidget
+      autoConnect: true,
       timeout: 60000, // ✅ Увеличили таймаут подключения (было по умолчанию 20000)
       reconnection: true, // ✅ Автопереподключение при обрыве
       reconnectionAttempts: 5,
@@ -24,8 +24,8 @@ export function connectSocket(): Socket {
   return s
 }
 
-export function disconnectSocket() {
-  if (socket) {
-    socket.disconnect()
-  }
-}
+// export function disconnectSocket() {
+//   if (socket) {
+//     socket.disconnect()
+//   }
+// }

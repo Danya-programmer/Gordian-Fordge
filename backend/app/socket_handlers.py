@@ -6,6 +6,16 @@ from app.services.graph_service.graph_db import GraphDB
 from app.services.search_service.search_service import SearchService
 from app.socketio_app import chat_rooms, sio
 
+
+from app.services.document_service import document_service
+from app.services.document_repository import DocumentModel
+
+import uuid
+
+from app.services.document_repository import DocumentRepository
+from app.services.s3_service import s3_service
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,3 +82,46 @@ async def handle_search(sid, data):
 # ВСЕ события ведут к поиску
 for alias in ['user_message', 'message', 'chat', 'ask', 'ask_ai', 'search', 'ask_search']:
     sio.on(alias, handle_search)
+
+
+
+# ============================================================
+# ОБРАБОТЧИКИ ДОКУМЕНТОВ
+# ============================================================
+
+@sio.on('get_documents')
+async def handle_get_documents(sid, data=None):
+    """Получить список документов через WebSocket."""
+    try:
+        from app.services.document_repository import DocumentRepository
+        from app.services.s3_service import s3_service
+
+        documents = await DocumentRepository.list_all()
+
+        result = []
+        for doc in documents:
+            try:
+                file_url = await s3_service.get_presigned_url(doc.s3_key)
+            except Exception:
+                file_url = None
+
+            result.append({
+                "id": str(doc.id),
+                "original_name": doc.original_name,
+                "file_size": doc.file_size,
+                "mime_type": doc.mime_type,
+                "status": doc.status,
+                "error_message": doc.error_message,
+                "chunks_count": doc.chunks_count,
+                "nodes_count": doc.nodes_count,
+                "edges_count": doc.edges_count,
+                "file_url": file_url,
+                "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                "processed_at": doc.processed_at.isoformat() if doc.processed_at else None,
+            })
+
+        await sio.emit('documents_list', {"documents": result}, to=sid)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения списка документов: {e}", exc_info=True)
+        await sio.emit('error', {'error': str(e)}, to=sid)
