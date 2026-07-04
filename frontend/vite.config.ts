@@ -21,6 +21,8 @@ export default defineConfig({
     strictPort: true,        // ← если порт занят — упадёт, а не возьмёт другой
     watch: {
       usePolling: true,      // ← hot-reload в контейнере
+      interval: 500,
+      ignored: ['**/node_modules/**', '**/dist/**'],
     },
   },
 })

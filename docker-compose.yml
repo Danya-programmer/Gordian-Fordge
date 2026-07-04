@@ -12,8 +12,11 @@ services:
       - ./frontend:/app
       # Исключаем node_modules — используем контейнерные
       - /app/node_modules
+      # Исключаем dist
+      - /app/dist
     environment:
       - CHOKIDAR_USEPOLLING=true
+      - CHOKIDAR_INTERVAL=500
       - WATCHPACK_POLLING=true
       - VITE_API_URL=http://localhost:8000
     restart: unless-stopped
