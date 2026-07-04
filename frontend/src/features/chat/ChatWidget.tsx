@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { getSocket } from '@shared/api/socket'
 import type { Message } from '@entities/message/types'
+import { MarkdownMessage } from '@shared/ui/MarkdownMessage'
+import '@shared/ui/markdown.css'
 
 export function ChatWidget() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -8,14 +10,14 @@ export function ChatWidget() {
   const [isWaiting, setIsWaiting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null) // ✅ Храним timeout в ref
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Авто-скролл
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // ✅ ОДИН useEffect для всех обработчиков сокета
+  // ОДИН useEffect для всех обработчиков сокета
   useEffect(() => {
     const socket = getSocket()
 
@@ -41,7 +43,7 @@ export function ChatWidget() {
       setIsWaiting(false)
     }
 
-    // ✅ Обработчики AI (в одном месте!)
+    // Обработчики AI (в одном месте!)
     const onAiThinking = () => {
       console.log('🤖 AI думает...')
       setIsWaiting(true)
@@ -101,7 +103,7 @@ export function ChatWidget() {
       socket.off('ai_answer', onAiAnswer)
       socket.off('error', onError)
     }
-  }, []) // ← Пустой массив = выполняется один раз
+  }, [])
 
   const handleSend = () => {
     const text = input.trim()
@@ -133,7 +135,7 @@ export function ChatWidget() {
 
     socket.emit('user_message', { text })
 
-    // ✅ Таймаут 60 секунд
+    // Таймаут 60 секунд
     timeoutRef.current = setTimeout(() => {
       setIsWaiting(false)
       const timeoutMsg: Message = {
@@ -192,8 +194,12 @@ export function ChatWidget() {
               }`}
               style={{ maxWidth: '70%' }}
             >
-              <div>{msg.text}</div>
-              <small className="opacity-75">
+              {msg.sender === 'bot' ? (
+                <MarkdownMessage content={msg.text} />
+              ) : (
+                <div>{msg.text}</div>
+              )}
+              <small className="opacity-75 d-block mt-1">
                 {new Date(msg.timestamp).toLocaleTimeString()}
               </small>
             </div>
