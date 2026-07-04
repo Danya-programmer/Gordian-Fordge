@@ -30,6 +30,9 @@ NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
+# Qdrant
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")  # для Docker
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "scientific_chunks")
 
 
 if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:

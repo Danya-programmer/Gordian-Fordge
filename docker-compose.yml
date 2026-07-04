@@ -1,4 +1,26 @@
 services:
+  # ==================== FRONTEND ====================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: gordian-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      # Монтируем исходники для hot-reload
+      - ./frontend:/app
+      # Исключаем node_modules — используем контейнерные
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - gordian-network
   # ==================== BACKEND ====================
   backend:
     build:
@@ -11,6 +33,7 @@ services:
       - .env
     volumes:
       - ./uploads:/app/uploads
+      - hf_cache:/root/.cache/huggingface  # Кэш моделей
     restart: unless-stopped
     depends_on:
       - qdrant
@@ -64,6 +87,7 @@ volumes:
     driver: local
   neo4j_plugins:
     driver: local
+  hf_cache:
 
 # ==================== NETWORKS ====================
 networks:

@@ -17,5 +17,10 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    host: '0.0.0.0',        // ← обязательно для Docker
+    strictPort: true,        // ← если порт занят — упадёт, а не возьмёт другой
+    watch: {
+      usePolling: true,      // ← hot-reload в контейнере
+    },
   },
 })

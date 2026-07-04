@@ -11,6 +11,9 @@ from app.services.graph_service.schema import VALID_NODE_TYPES, VALID_EDGE_TYPES
 
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# ПРОМПТ ДЛЯ LLM
+# ============================================================
 PROMPT_TEMPLATE = """
 Ты — парсер научно-технических текстов. Твоя задача — извлечь сущности и связи из фрагмента текста и вернуть СТРОГИЙ JSON.
 
@@ -54,26 +57,30 @@ PROMPT_TEMPLATE = """
 }}
 """
 
+
 class DocumentParser:
     def __init__(
         self,
         db: GraphDB,
         ai_client: Callable[[str], Awaitable[str]],
+        qdrant_service: "QdrantService" = None,
         max_concurrent: int = 3,
         chunk_size: int = 1500,
         chunk_overlap: int = 150,
     ):
         self.db = db
         self.ai_client = ai_client
+        self.qdrant_service = qdrant_service
         self.max_concurrent = max_concurrent
 
+        # ✅ СПЛИТТЕР
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", ". ", " "],
         )
 
-        # Подставляем типы в промпт через replace, чтобы не трогать {chunk_text}
+        # ✅ ФОРМИРОВАНИЕ ПРОМПТА (через replace, чтобы не трогать {chunk_text})
         self.prompt_template = PROMPT_TEMPLATE.replace(
             "{valid_node_types}",
             ", ".join([f'"{t}"' for t in VALID_NODE_TYPES]),
@@ -83,7 +90,7 @@ class DocumentParser:
         )
 
     # ------------------------------------------------------------------ #
-    #  Очистка JSON
+    #  ОЧИСТКА JSON ОТ LLM
     # ------------------------------------------------------------------ #
     def _clean_llm_json(self, raw_text: str) -> dict:
         """Очистка ответа LLM от мусора, markdown и лишних запятых."""
@@ -103,11 +110,22 @@ class DocumentParser:
             return {"nodes": [], "edges": []}
 
     # ------------------------------------------------------------------ #
-    #  Payload для Qdrant (заготовка на будущее)
+    #  ПОСТРОЕНИЕ PAYLOAD ДЛЯ QDRANT
     # ------------------------------------------------------------------ #
-    def _build_qdrant_payload(self, chunk_text: str, doc_metadata: dict, chunk_index: int, graph_json: dict) -> dict:
-        materials = list({n["name"] for n in graph_json.get("nodes", []) if n["type"] == "material"})
-        processes = list({n["name"] for n in graph_json.get("nodes", []) if n["type"] == "process"})
+    def _build_qdrant_payload(
+        self,
+        chunk_text: str,
+        doc_metadata: dict,
+        chunk_index: int,
+        graph_json: dict,
+    ) -> dict:
+        """Собирает payload для Qdrant с извлечёнными сущностями."""
+        materials = list({
+            n["name"] for n in graph_json.get("nodes", []) if n["type"] == "material"
+        })
+        processes = list({
+            n["name"] for n in graph_json.get("nodes", []) if n["type"] == "process"
+        })
 
         parameters = []
         for edge in graph_json.get("edges", []):
@@ -121,7 +139,10 @@ class DocumentParser:
 
         return {
             "id": str(uuid.uuid4()),
-            "vector": {"dense": [], "sparse": {"indices": [], "values": []}},
+            "vector": {
+                "dense": [],  # заполнится в QdrantService
+                "sparse": {"indices": [], "values": []},
+            },
             "payload": {
                 "text": chunk_text,
                 "doc_id": doc_metadata["doc_id"],
@@ -134,22 +155,26 @@ class DocumentParser:
                 "materials": materials,
                 "processes": processes,
                 "parameters": parameters,
-                "global_entities": {"materials": materials, "processes": processes},
+                "global_entities": {
+                    "materials": materials,
+                    "processes": processes,
+                },
                 "created_at": "2026-07-04T12:00:00Z",
             },
         }
 
     # ------------------------------------------------------------------ #
-    #  Обработка ОДНОГО чанка (с ограничением параллелизма)
+    #  ОБРАБОТКА ОДНОГО ЧАНКА (с параллелизмом через semaphore)
     # ------------------------------------------------------------------ #
     async def _process_chunk(
         self,
         chunk_index: int,
         chunk_text: str,
+        doc_metadata: dict,
         semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
         """
-        Обрабатывает один чанк: вызывает LLM, парсит JSON, пишет в Neo4j.
+        Обрабатывает один чанк: вызывает LLM, пишет в Neo4j, загружает в Qdrant.
         Все ошибки ловятся внутри — функция НИКОГДА не кидает исключение наружу.
         """
         async with semaphore:
@@ -162,28 +187,49 @@ class DocumentParser:
                 "parsed_graph": None,
                 "nodes_created": 0,
                 "edges_created": 0,
+                "qdrant_loaded": False,
                 "error": None,
             }
 
             try:
+                # 1. Вызов LLM
                 prompt = self.prompt_template.format(chunk_text=chunk_text)
                 raw_response = await self.ai_client(prompt)
                 result["raw_llm_response"] = raw_response
 
+                # 2. Парсинг JSON
                 graph_json = self._clean_llm_json(raw_response)
                 result["parsed_graph"] = graph_json
 
+                # 3. Запись в Neo4j
                 if graph_json.get("nodes"):
                     stats = self.db.add(graph_json)
                     result["nodes_created"] = stats.get("nodes_created", 0)
                     result["edges_created"] = stats.get("edges_created", 0)
-                    logger.info(
-                        f"  ✅ Чанк {chunk_index + 1}: "
-                        f"+{result['nodes_created']} узлов, "
-                        f"+{result['edges_created']} ребер"
-                    )
-                else:
-                    logger.info(f"  ️ Чанк {chunk_index + 1}: LLM не вернула узлов")
+
+                # 4. Загрузка в Qdrant
+                if self.qdrant_service:
+                    try:
+                        qdrant_payload = self._build_qdrant_payload(
+                            chunk_text=chunk_text,
+                            doc_metadata=doc_metadata,
+                            chunk_index=chunk_index,
+                            graph_json=graph_json,
+                        )
+                        self.qdrant_service.upsert_chunk(qdrant_payload)
+                        result["qdrant_loaded"] = True
+                        logger.info(f"   💾 Чанк {chunk_index + 1} загружен в Qdrant")
+                    except Exception as qdrant_err:
+                        logger.warning(
+                            f"   ⚠️ Ошибка загрузки в Qdrant (чанк {chunk_index + 1}): {qdrant_err}"
+                        )
+                        # Не падаем — Qdrant опционален
+
+                logger.info(
+                    f"  ✅ Чанк {chunk_index + 1}: "
+                    f"+{result['nodes_created']} узлов, "
+                    f"+{result['edges_created']} ребер"
+                )
 
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {str(e)}"
@@ -211,12 +257,11 @@ class DocumentParser:
 
         # Создаём задачи для всех чанков
         tasks = [
-            self._process_chunk(i, chunk_text, semaphore)
+            self._process_chunk(i, chunk_text, doc_metadata, semaphore)
             for i, chunk_text in enumerate(chunks)
         ]
 
-        # Запускаем параллельно. return_exceptions=False, т.к.
-        # _process_chunk сам ловит все ошибки и возвращает их в result["error"].
+        # Запускаем параллельно
         results: List[Dict[str, Any]] = await asyncio.gather(*tasks)
 
         # Агрегация
@@ -224,6 +269,7 @@ class DocumentParser:
         errors = []
         total_nodes = 0
         total_edges = 0
+        qdrant_loaded_count = 0
 
         for r in results:
             chunks_data.append({
@@ -235,6 +281,8 @@ class DocumentParser:
 
             total_nodes += r["nodes_created"]
             total_edges += r["edges_created"]
+            if r["qdrant_loaded"]:
+                qdrant_loaded_count += 1
 
             if r["error"]:
                 errors.append({
@@ -242,7 +290,7 @@ class DocumentParser:
                     "error": r["error"],
                 })
 
-        # Сортируем по chunk_index (результаты могут прийти в любом порядке)
+        # Сортируем по chunk_index
         chunks_data.sort(key=lambda x: x["chunk_index"])
 
         chunks_successful = total_chunks - len(errors)
@@ -251,7 +299,7 @@ class DocumentParser:
         logger.info(
             f"✅ Парсинг завершён: "
             f"{chunks_successful}/{total_chunks} чанков успешно, "
-            f"{chunks_failed} с ошибками. "
+            f"{qdrant_loaded_count} загружено в Qdrant. "
             f"Всего: +{total_nodes} узлов, +{total_edges} ребер"
         )
 
@@ -262,6 +310,7 @@ class DocumentParser:
             "chunks_failed": chunks_failed,
             "nodes_created": total_nodes,
             "edges_created": total_edges,
+            "qdrant_loaded": qdrant_loaded_count,
             "chunks_data": chunks_data,
             "errors": errors,
         }

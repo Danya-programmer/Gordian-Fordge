@@ -1,9 +1,13 @@
 import logging
+import uuid
+import json
+from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 import aiofiles
 
 from app.config import UPLOAD_DIR
 from app.services.file_parser import parse_file
+from app.services.qdrant_service import QdrantService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -12,9 +16,6 @@ router = APIRouter()
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        import uuid
-        import json
-        from pathlib import Path
         from app.services.parser import DocumentParser
         from app.services.graph_service.config import get_driver
         from app.services.graph_service.graph_db import GraphDB
@@ -69,18 +70,30 @@ async def upload_file(file: UploadFile = File(...)):
                     json_mode=True
                 )
             
-            parser = DocumentParser(db, llm_client, max_concurrent=3)
+            # 🆕 QdrantService создаётся один раз
+            qdrant_service = QdrantService()
+            
+            parser = DocumentParser(
+                db=db,
+                ai_client=llm_client,
+                qdrant_service=qdrant_service,
+                max_concurrent=3,
+            )
             
             logger.info(f"🔍 Запуск парсинга документа {file_id}...")
             parse_result = await parser.parse_document(text_content, doc_metadata)
             
-            logger.info(f"✅ Документ обработан: {parse_result['chunks_successful']}/{parse_result['chunks_processed']} чанков успешно")
+            logger.info(
+                f"✅ Документ обработан: "
+                f"{parse_result['chunks_successful']}/{parse_result['chunks_processed']} чанков успешно, "
+                f"в Qdrant загружено: {parse_result.get('qdrant_loaded', 0)}"
+            )
             
             db.close()
             
         except Exception as parse_error:
             logger.error(f"❌ Критическая ошибка парсинга: {parse_error}", exc_info=True)
-            # ✅ НЕ ПАДАЕМ, а сохраняем то, что есть
+            # ✅ Fallback-результат с полем qdrant_loaded
             parse_result = {
                 "doc_id": file_id,
                 "chunks_processed": 0,
@@ -88,11 +101,12 @@ async def upload_file(file: UploadFile = File(...)):
                 "chunks_failed": 0,
                 "nodes_created": 0,
                 "edges_created": 0,
+                "qdrant_loaded": 0,  # 🆕
                 "chunks_data": [],
                 "errors": [{"error": f"Критическая ошибка: {parse_error}"}],
             }
         
-        # 5. ✅ СОХРАНЯЕМ JSON ВСЕГДА, даже если были ошибки
+        # 5. ✅ СОХРАНЯЕМ JSON ВСЕГДА
         json_filename = f"{file_id}_parsed.json"
         json_file_path = UPLOAD_DIR / json_filename
         
@@ -106,6 +120,7 @@ async def upload_file(file: UploadFile = File(...)):
                 "chunks_failed": parse_result["chunks_failed"],
                 "nodes_created": parse_result["nodes_created"],
                 "edges_created": parse_result["edges_created"],
+                "qdrant_loaded": parse_result.get("qdrant_loaded", 0),  # 🆕
             },
             "errors": parse_result.get("errors", []),
             "chunks": parse_result["chunks_data"],
@@ -126,6 +141,7 @@ async def upload_file(file: UploadFile = File(...)):
             "chunks_failed": parse_result['chunks_failed'],
             "nodes_created": parse_result.get('nodes_created', 0),
             "edges_created": parse_result.get('edges_created', 0),
+            "qdrant_loaded": parse_result.get('qdrant_loaded', 0),  # 🆕
             "parsed_json_file": json_filename,
         }
         
