@@ -187,38 +187,49 @@ class SearchService:
         search_results: List[Dict[str, Any]],
         anchor: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Генерирует ответ с правильными ссылками на источники."""
+        """Генерирует ответ с защитой от галлюцинаций."""
         context_chunks = []
         source_index = 1
-        sources_map = {}  # Маппинг "номер источника" → метаданные
+        sources_map = {}
+        
+        # 🆕 Дедупликация источников по doc_id
+        seen_doc_ids = set()
         
         # 1. Добавляем якорь первым (если есть)
         if anchor:
-            source_label = f"[Источник {source_index}]"
-            sources_map[source_index] = {
-                "doc_id": anchor.get("doc_id"),
-                "title": anchor.get("title", "Unknown"),
-                "file_name": anchor.get("title", "Unknown"),
-                "file_url": anchor.get("file_url"),
-                "chunk_index": None,
-                "score": anchor.get("score", 0),
-            }
-            context_chunks.append(
-                f"{source_label} «{anchor.get('title', 'Unknown')}»:\n"
-                f"{anchor['text']}\n"
-            )
-            source_index += 1
+            doc_id = anchor.get("doc_id")
+            if doc_id not in seen_doc_ids:
+                seen_doc_ids.add(doc_id)
+                source_label = f"[Источник {source_index}]"
+                sources_map[source_index] = {
+                    "doc_id": doc_id,
+                    "title": anchor.get("title", "Unknown"),
+                    "file_name": anchor.get("title", "Unknown"),
+                    "file_url": anchor.get("file_url"),
+                    "chunk_index": None,
+                    "score": anchor.get("score", 0),
+                }
+                context_chunks.append(
+                    f"{source_label} «{anchor.get('title', 'Unknown')}»:\n"
+                    f"{anchor['text']}\n"
+                )
+                source_index += 1
         
-        # 2. Добавляем остальные чанки
+        # 2. Добавляем остальные чанки (с дедупликацией)
         for result in search_results[:config.LLM_MAX_CONTEXT_CHUNKS]:
             payload = result["payload"]
-            source_label = f"[Источник {source_index}]"
+            doc_id = payload.get("doc_id")
             
-            # 🆕 Используем название файла как метку
+            # 🆕 Пропускаем дубликаты
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+            
+            source_label = f"[Источник {source_index}]"
             file_name = payload.get("file_name") or payload.get("title") or "Unknown"
             
             sources_map[source_index] = {
-                "doc_id": payload.get("doc_id"),
+                "doc_id": doc_id,
                 "title": payload.get("title", "Unknown"),
                 "file_name": file_name,
                 "file_url": payload.get("file_url"),
@@ -234,14 +245,14 @@ class SearchService:
         
         context = "\n---\n".join(context_chunks)
         
-        # 🆕 Список источников для LLM (чтобы он знал, на что ссылаться)
         sources_list = "\n".join([
             f"[Источник {idx}] «{info['file_name']}»"
             for idx, info in sources_map.items()
         ])
         
+        # 🆕 УСИЛЕННЫЙ ПРОМПТ с защитой от галлюцинаций
         prompt = f"""
-    Ты — эксперт в области горно-металлургии и научных исследований.
+    Ты — эксперт в области горно-металлургии. Твоя задача — отвечать ТОЛЬКО на основе предоставленного контекста.
 
     ВОПРОС ПОЛЬЗОВАТЕЛЯ:
     {query}
@@ -252,20 +263,38 @@ class SearchService:
     СПИСОК ИСТОЧНИКОВ:
     {sources_list}
 
-    ИНСТРУКЦИИ ПО ЦИТИРОВАНИЮ:
-    1. При упоминании фактов из контекста ОБЯЗАТЕЛЬНО указывай источник в формате: [Источник N]
-    где N — номер источника из СПИСКА ИСТОЧНИКОВ выше.
-    2. Пример правильной ссылки: "...используется метод электроэкстракции [Источник 1]."
-    3. Пример НЕПРАВИЛЬНОЙ ссылки: "...используется метод электроэкстракции [Источник: ЧАНК 4]." ← ТАК НЕ ПИСАТЬ!
-    4. Если информация из нескольких источников: [Источник 1, Источник 3].
-    5. Используй ТОЛЬКО информацию из предоставленного контекста.
-    6. Если в контексте нет ответа — честно скажи "Недостаточно данных в базе знаний".
-    7. Выдели ключевые выводы отдельным блоком.
+    🚨 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА (СТРОГО СОБЛЮДАТЬ):
 
-    СТРУКТУРА ОТВЕТА:
-    1. Краткий ответ на вопрос
-    2. Детали с цитированием источников
-    3. Ключевые выводы
+    1. ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ:
+    - Используй ТОЛЬКО информацию из КОНТЕКСТА выше
+    - НЕ ДОДУМЫВАЙ факты, цифры, названия организаций
+    - НЕ ДОБАВЛЯЙ детали, которых нет в контексте (температуры, допуски, проценты)
+    - Если информации недостаточно — честно скажи "Недостаточно данных в базе знаний"
+
+    2. ПРАВИЛА ЦИТИРОВАНИЯ:
+    - При упоминании фактов ОБЯЗАТЕЛЬНО указывай источник: [Источник N]
+    - Пример правильно: "...используется метод электроэкстракции [Источник 1]."
+    - Пример НЕПРАВИЛЬНО: "...допуск колебаний не более 10°C" (если этого нет в контексте!)
+    - Если информация из нескольких источников: [Источник 1, Источник 3]
+
+    3. ЗАПРЕТ НА ВЫДУМЫВАНИЕ:
+    - НЕ упоминай организации, если их нет в контексте
+    - НЕ указывай конкретные числа (температура, давление), если их нет в контексте
+    - НЕ интерпретируй данные — только констатируй факты из контекста
+
+    4. СТРУКТУРА ОТВЕТА:
+    - Краткий ответ (1-2 предложения)
+    - Детали с цитированием (только факты из контекста)
+    - Ключевые выводы (3-5 пунктов)
+
+    5. ЯЗЫК:
+    - Отвечай на русском языке
+    - НЕ используй английские вставки (типа "referred to as")
+    - Используй научный, но понятный стиль
+
+    ПРОВЕРКА ПЕРЕД ОТВЕТОМ:
+    Перед тем как написать факт, проверь: "Есть ли это в КОНТЕКСТЕ выше?"
+    Если НЕТ — НЕ ПИШИ это!
 
     ОТВЕТ:
     """
@@ -275,11 +304,14 @@ class SearchService:
             question=prompt,
             max_retries=2,
             json_mode=False,
-            temperature=config.LLM_TEMPERATURE,
+            temperature=0.2,  # 🆕 Понижаем температуру для меньшей креативности
         )
         
-        # Формируем sources с правильными данными
-        sources = list(sources_map.values())
+        # 🆕 Фильтруем источники без названий
+        sources = [
+            info for info in sources_map.values()
+            if info.get("file_name") and info["file_name"] != "Unknown"
+        ]
         
         return {
             "text": raw_answer,
