@@ -187,44 +187,90 @@ class SearchService:
         search_results: List[Dict[str, Any]],
         anchor: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Генерирует ответ."""
+        """Генерирует ответ с правильными ссылками на источники."""
         context_chunks = []
+        source_index = 1
+        sources_map = {}  # Маппинг "номер источника" → метаданные
         
+        # 1. Добавляем якорь первым (если есть)
         if anchor:
+            source_label = f"[Источник {source_index}]"
+            sources_map[source_index] = {
+                "doc_id": anchor.get("doc_id"),
+                "title": anchor.get("title", "Unknown"),
+                "file_name": anchor.get("title", "Unknown"),
+                "file_url": anchor.get("file_url"),
+                "chunk_index": None,
+                "score": anchor.get("score", 0),
+            }
             context_chunks.append(
-                f"🎯 НАИБОЛЕЕ РЕЛЕВАНТНЫЙ ЧАНК (score={anchor['score']:.3f}):\n"
+                f"{source_label} «{anchor.get('title', 'Unknown')}»:\n"
                 f"{anchor['text']}\n"
-                f"Источник: {anchor.get('title', 'Unknown')}\n"
             )
+            source_index += 1
         
-        for i, result in enumerate(search_results[:config.LLM_MAX_CONTEXT_CHUNKS]):
+        # 2. Добавляем остальные чанки
+        for result in search_results[:config.LLM_MAX_CONTEXT_CHUNKS]:
             payload = result["payload"]
+            source_label = f"[Источник {source_index}]"
+            
+            # 🆕 Используем название файла как метку
+            file_name = payload.get("file_name") or payload.get("title") or "Unknown"
+            
+            sources_map[source_index] = {
+                "doc_id": payload.get("doc_id"),
+                "title": payload.get("title", "Unknown"),
+                "file_name": file_name,
+                "file_url": payload.get("file_url"),
+                "chunk_index": payload.get("chunk_index"),
+                "score": result.get("score", 0),
+            }
+            
             context_chunks.append(
-                f"ЧАНК {i+1} (score={result.get('score', 0):.3f}):\n"
+                f"{source_label} «{file_name}»:\n"
                 f"{payload.get('text', '')}\n"
-                f"Источник: {payload.get('title', 'Unknown')}\n"
             )
+            source_index += 1
         
-        context = "\n".join(context_chunks)
+        context = "\n---\n".join(context_chunks)
+        
+        # 🆕 Список источников для LLM (чтобы он знал, на что ссылаться)
+        sources_list = "\n".join([
+            f"[Источник {idx}] «{info['file_name']}»"
+            for idx, info in sources_map.items()
+        ])
         
         prompt = f"""
-Ты — эксперт в области горно-металлургии.
+    Ты — эксперт в области горно-металлургии и научных исследований.
 
-ВОПРОС:
-{query}
+    ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+    {query}
 
-КОНТЕКСТ:
-{context}
+    КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ:
+    {context}
 
-ИНСТРУКЦИИ:
-1. Ответь используя ТОЛЬКО контекст.
-2. Если нет ответа — скажи "Недостаточно данных".
-3. Цитируй источники [Источник: название].
-4. Выдели ключевые выводы.
+    СПИСОК ИСТОЧНИКОВ:
+    {sources_list}
 
-ОТВЕТ:
-"""
+    ИНСТРУКЦИИ ПО ЦИТИРОВАНИЮ:
+    1. При упоминании фактов из контекста ОБЯЗАТЕЛЬНО указывай источник в формате: [Источник N]
+    где N — номер источника из СПИСКА ИСТОЧНИКОВ выше.
+    2. Пример правильной ссылки: "...используется метод электроэкстракции [Источник 1]."
+    3. Пример НЕПРАВИЛЬНОЙ ссылки: "...используется метод электроэкстракции [Источник: ЧАНК 4]." ← ТАК НЕ ПИСАТЬ!
+    4. Если информация из нескольких источников: [Источник 1, Источник 3].
+    5. Используй ТОЛЬКО информацию из предоставленного контекста.
+    6. Если в контексте нет ответа — честно скажи "Недостаточно данных в базе знаний".
+    7. Выдели ключевые выводы отдельным блоком.
+
+    СТРУКТУРА ОТВЕТА:
+    1. Краткий ответ на вопрос
+    2. Детали с цитированием источников
+    3. Ключевые выводы
+
+    ОТВЕТ:
+    """
         
+        # Вызываем LLM
         raw_answer = await get_ai_answer(
             question=prompt,
             max_retries=2,
@@ -232,17 +278,8 @@ class SearchService:
             temperature=config.LLM_TEMPERATURE,
         )
         
-        sources = []
-        for result in search_results[:config.LLM_MAX_CONTEXT_CHUNKS]:
-            payload = result["payload"]
-            sources.append({
-                "doc_id": payload.get("doc_id"),
-                "title": payload.get("title", payload.get("file_name", "Unknown")),
-                "file_name": payload.get("file_name", "Unknown"),
-                "file_url": payload.get("file_url"),  # ← берём из payload Qdrant
-                "chunk_index": payload.get("chunk_index"),
-                "score": result.get("score", 0),
-            })
+        # Формируем sources с правильными данными
+        sources = list(sources_map.values())
         
         return {
             "text": raw_answer,

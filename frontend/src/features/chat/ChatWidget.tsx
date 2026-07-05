@@ -19,7 +19,6 @@ export function ChatWidget() {
   useEffect(() => {
     const socket = getSocket()
 
-    // ✅ Сокет уже подключен автоматически (autoConnect: true)
     setIsConnected(socket.connected)
 
     const onConnect = () => {
@@ -44,6 +43,7 @@ export function ChatWidget() {
       setIsWaiting(true)
     }
 
+    // 🆕 ОБНОВЛЁННЫЙ ОБРАБОТЧИК — добавляет источники в ответ
     const onAiAnswer = (data: any) => {
       console.log('✅ Ответ от AI:', data)
       
@@ -53,9 +53,31 @@ export function ChatWidget() {
       }
       
       setIsWaiting(false)
+      
+      // Берём основной текст ответа
+      let answerText = data.answer || data.text || 'Ответ пустой'
+      
+      // 🆕 Добавляем блок источников, если они есть
+      if (data.sources && Array.isArray(data.sources) && data.sources.length > 0) {
+        const sourcesList = data.sources
+          .map((s: any, i: number) => {
+            const title = s.file_name || s.title || `Источник ${i + 1}`
+            const url = s.file_url
+            
+            // Если есть ссылка — делаем её кликабельной
+            if (url) {
+              return `${i + 1}. [${title}](${url})`
+            }
+            return `${i + 1}. ${title}`
+          })
+          .join('\n')
+        
+        answerText += `\n\n---\n\n**📚 Источники:**\n${sourcesList}`
+      }
+      
       const botMsg: Message = {
         id: Date.now().toString() + '-bot',
-        text: data.answer || data.text || 'Ответ пустой',
+        text: answerText,
         sender: 'bot',
         timestamp: new Date().toISOString(),
       }
@@ -113,7 +135,6 @@ export function ChatWidget() {
     setInput('')
     setIsWaiting(true)
 
-    // ✅ Просто отправляем — сокет уже подключен
     console.log('📤 Отправляем сообщение')
     socket.emit('user_message', { text })
 
