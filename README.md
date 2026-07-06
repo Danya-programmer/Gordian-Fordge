@@ -254,6 +254,7 @@ socket.on('document_status_update', (update) => {
 ## 📬 Контакты
 
 📧 danbgavindv90835@gmail.com  
+📧 kotof.danila2016@yandex.ru
 
 ---
 
